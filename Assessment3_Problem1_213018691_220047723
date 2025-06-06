@@ -1,0 +1,212 @@
+### A Pluto.jl notebook ###
+# v0.20.8
+
+using Markdown
+using InteractiveUtils
+
+# ╔═╡ 431118b0-4231-11f0-12eb-eb7a0624cdcc
+import Pkg
+
+# ╔═╡ 6988cbf6-fa37-43f6-b9d6-13496e369ab0
+Pkg.add("Flux")
+
+# ╔═╡ 3012ded3-1e6c-4c67-8bd2-bf9152e1cd64
+Pkg.add("CSV")
+
+# ╔═╡ d8d917ce-6351-4080-861e-e42c0624128d
+Pkg.add("DataFrames")
+
+# ╔═╡ 1ad3893b-0774-46de-985c-196cedfaf763
+Pkg.add("TextAnalysis")
+
+# ╔═╡ 2dd729eb-ab17-4dab-ad25-f3d0788b8d66
+Pkg.add("Plots")
+
+# ╔═╡ 36ba49d6-7f35-4400-b390-72dcf2f200a6
+Pkg.add("ROCAnalysis")
+
+# ╔═╡ 959f7cb4-c85e-4d1b-b33e-47897e079568
+Pkg.add("Optimisers")
+
+# ╔═╡ 4bfe7085-681b-4f0b-9bb3-0f7c07c544a5
+using Flux
+
+# ╔═╡ c2b48d51-37ce-426c-90ac-8c2d1fd65cc0
+using CSV
+
+# ╔═╡ 7e4a79b3-dec8-4a4b-b2d5-285cdd496c0b
+using DataFrames
+
+# ╔═╡ f95eadfc-dafc-41ae-b23a-2f359947a2f7
+using TextAnalysis
+
+# ╔═╡ 5f2690eb-0204-4401-afff-baf5ff3f9015
+using Plots
+
+# ╔═╡ d047fe05-a621-45b4-92aa-22e2a7a08f51
+using ROCAnalysis
+
+# ╔═╡ 5b4bac5e-6614-4ee9-ba11-6c9e7d6d36a1
+using Flux.Losses
+
+# ╔═╡ 198e7c14-70e5-4f66-a559-32d0fda6522e
+using Statistics
+
+# ╔═╡ cd67440d-db93-4413-9b1b-9bfc41a791b3
+using Flux: onehotbatch
+
+# ╔═╡ e90fd49c-165b-438a-bf65-44513cdecac2
+using Flux: onecold
+
+# ╔═╡ 940bdb5f-76f7-405d-8de9-2117aac395e7
+using Optimisers
+
+# ╔═╡ f9156833-8ce2-452d-b849-3bf3300c42a3
+# Loading CSV files
+begin 
+	df1 = CSV.read("C:/Users/220047723/Desktop/TAI911S/medical_tc_train.csv", DataFrame)
+df2 = CSV.read("C:/Users/220047723/Desktop/TAI911S/medical_tc_test.csv", DataFrame)
+df3 = CSV.read("C:/Users/220047723/Desktop/TAI911S/medical_tc_labels.csv", DataFrame)
+end
+
+# ╔═╡ b296c74b-ac6a-4a3c-aa25-c96aa136ca34
+println(names(df1))
+
+# ╔═╡ c3e7a8f5-a7c0-4ab2-ad58-edf011ffbe6d
+println(names(df2))
+
+# ╔═╡ f0317ad1-f0d3-424f-8978-f288421c4a5d
+println(names(df3))
+
+# ╔═╡ 37c56970-8da9-47fa-b0ab-c51af185b38d
+begin
+function preprocess(df)
+    if hasproperty(df, :medical_abstract)
+        texts = df.medical_abstract
+    elseif hasproperty(df, :condition_name)
+        texts = df.condition_name
+    else
+        error("No suitable text column found")
+    end
+
+    if hasproperty(df, :condition_label)
+        labels = df.condition_label
+    else
+        error("No condition_label column found")
+    end
+
+    docs = [StringDocument(text) for text in texts]
+    crps = Corpus(docs)
+    update_lexicon!(crps)
+    vocab = lexicon(crps)
+    sequences = [findall(in(keys(vocab)), split(lowercase(t))) for t in texts]
+    max_len = maximum(length.(sequences))
+    padded_sequences = [vcat(s, zeros(Int, max_len - length(s))) for s in sequences]
+    X = hcat(padded_sequences...)'
+    
+    # Convert labels to one-hot vectors
+    y = onehotbatch(labels, 1:5)
+    
+    return X, y, vocab  # Return vocab as well
+end
+end
+
+# ╔═╡ 37c7de53-f6ee-4837-803a-c0670ae2ebb0
+#Defining Preprocess function
+begin
+	X_train, y_train, vocab = preprocess(df1)
+vocab_size = length(vocab)
+end
+
+# ╔═╡ f66fee61-6f47-4a93-bf20-3ea90beaec70
+X_test, y_test = preprocess(df2)
+
+# ╔═╡ a6db732f-24a9-4cca-b717-9b441393b3a1
+df3[df3.condition_label .== 3, :condition_name]  # returns "nervous system diseases"
+
+# ╔═╡ 9efbae73-a138-4677-aea2-37804d3db15b
+#Defining and Train the LSTM Model
+
+# ╔═╡ 46db5279-722f-4098-adf0-3e2e03a86f8e
+# Define the LSTM model
+model = Chain(
+    Flux.Embedding(vocab_size, 64),
+    Flux.LSTM(64 => 128),
+    Dense(128, 10),
+    softmax
+)
+
+# ╔═╡ 6d15a64a-7718-4427-a993-f5e6526087cd
+# Loss function and optimizer
+begin
+	loss(x, y) = binarycrossentropy(model(x), y)
+opt = ADAM(0.001)
+ps = Flux.params(model)
+end
+
+# ╔═╡ bca20690-4ff2-4833-bba3-4a77838dd8c5
+#training step function
+function train!(x, y)
+    gs = gradient(ps) do
+        loss(x, y)
+    end
+    Flux.Optimise.update!(opt, ps, gs)
+end
+
+# ╔═╡ 0820a43e-334f-424e-b6f7-c6a18a3aabf1
+# Prepare data with batching
+begin
+	batch_size = 32
+data_loader = Flux.DataLoader((permutedims(X_train), y_train), batchsize=batch_size, shuffle=true)
+end
+
+# ╔═╡ 9aa9de34-14ce-4a4d-8dee-235905b46ffd
+epochs = 10
+
+# ╔═╡ 4f2602b0-1ec2-46f6-b0c7-eff1ad044417
+#Defining a batch_loss
+function batch_loss(x, y)
+    y_pred = model(x)
+    return Flux.Losses.binarycrossentropy(y_pred, y)
+end
+
+# ╔═╡ fd33d024-5a21-4176-b871-1a0813857342
+# Training loop (using training data)
+
+
+# ╔═╡ Cell order:
+# ╠═431118b0-4231-11f0-12eb-eb7a0624cdcc
+# ╠═6988cbf6-fa37-43f6-b9d6-13496e369ab0
+# ╠═3012ded3-1e6c-4c67-8bd2-bf9152e1cd64
+# ╠═d8d917ce-6351-4080-861e-e42c0624128d
+# ╠═1ad3893b-0774-46de-985c-196cedfaf763
+# ╠═2dd729eb-ab17-4dab-ad25-f3d0788b8d66
+# ╠═36ba49d6-7f35-4400-b390-72dcf2f200a6
+# ╠═4bfe7085-681b-4f0b-9bb3-0f7c07c544a5
+# ╠═c2b48d51-37ce-426c-90ac-8c2d1fd65cc0
+# ╠═7e4a79b3-dec8-4a4b-b2d5-285cdd496c0b
+# ╠═f95eadfc-dafc-41ae-b23a-2f359947a2f7
+# ╠═5f2690eb-0204-4401-afff-baf5ff3f9015
+# ╠═d047fe05-a621-45b4-92aa-22e2a7a08f51
+# ╠═5b4bac5e-6614-4ee9-ba11-6c9e7d6d36a1
+# ╠═198e7c14-70e5-4f66-a559-32d0fda6522e
+# ╠═cd67440d-db93-4413-9b1b-9bfc41a791b3
+# ╠═e90fd49c-165b-438a-bf65-44513cdecac2
+# ╠═959f7cb4-c85e-4d1b-b33e-47897e079568
+# ╠═940bdb5f-76f7-405d-8de9-2117aac395e7
+# ╠═f9156833-8ce2-452d-b849-3bf3300c42a3
+# ╠═b296c74b-ac6a-4a3c-aa25-c96aa136ca34
+# ╠═c3e7a8f5-a7c0-4ab2-ad58-edf011ffbe6d
+# ╠═f0317ad1-f0d3-424f-8978-f288421c4a5d
+# ╠═37c56970-8da9-47fa-b0ab-c51af185b38d
+# ╠═37c7de53-f6ee-4837-803a-c0670ae2ebb0
+# ╠═f66fee61-6f47-4a93-bf20-3ea90beaec70
+# ╠═a6db732f-24a9-4cca-b717-9b441393b3a1
+# ╠═9efbae73-a138-4677-aea2-37804d3db15b
+# ╠═46db5279-722f-4098-adf0-3e2e03a86f8e
+# ╠═6d15a64a-7718-4427-a993-f5e6526087cd
+# ╠═bca20690-4ff2-4833-bba3-4a77838dd8c5
+# ╠═0820a43e-334f-424e-b6f7-c6a18a3aabf1
+# ╠═9aa9de34-14ce-4a4d-8dee-235905b46ffd
+# ╠═4f2602b0-1ec2-46f6-b0c7-eff1ad044417
+# ╠═fd33d024-5a21-4176-b871-1a0813857342
